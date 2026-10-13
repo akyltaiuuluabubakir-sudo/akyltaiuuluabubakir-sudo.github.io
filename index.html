@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <!-- Эта строчка нужна, чтобы сайт правильно масштабировался на смартфонах -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Моя первая страница</title>
+    <title>Моя страница</title>
     <style>
         /* 1. БАЗОВЫЕ СТИЛИ (для обычных экранов, например, планшетов) */
         body {
@@ -15,8 +15,10 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
+            padding: 40px 16px;
+            box-sizing: border-box;
             transition: all 0.3s ease;
         }
         .card {
@@ -25,8 +27,9 @@
             border-radius: 20px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.08);
             text-align: center;
-            width: 85%;
-            max-width: 400px;
+            width: 100%;
+            max-width: 500px;
+            box-sizing: border-box;
             transition: all 0.3s ease;
         }
         h1 { 
@@ -57,6 +60,69 @@
         }
         .link-container a:hover {
             text-decoration: underline;
+        }
+        .guestbook {
+            margin-top: 28px;
+            padding-top: 22px;
+            border-top: 1px solid #e5e5e7;
+            text-align: left;
+        }
+        .guestbook h2 {
+            margin: 0 0 6px;
+            font-size: 22px;
+        }
+        .guestbook-intro, .guestbook-status {
+            color: #6e6e73;
+            font-size: 14px;
+        }
+        .guestbook-form {
+            display: grid;
+            gap: 10px;
+            margin-top: 16px;
+        }
+        .guestbook-form[hidden] {
+            display: none;
+        }
+        .guestbook-form label {
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .guestbook-form input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 11px 12px;
+            border: 1px solid #c7c7cc;
+            border-radius: 8px;
+            font: inherit;
+        }
+        .guestbook-form button {
+            justify-self: start;
+            border-radius: 8px;
+        }
+        .guestbook-status {
+            min-height: 20px;
+            margin: 10px 0 0;
+        }
+        .guestbook-list {
+            display: grid;
+            gap: 10px;
+            margin: 14px 0 0;
+            padding: 0;
+            list-style: none;
+        }
+        .guestbook-entry {
+            padding: 12px;
+            background: #f5f5f7;
+            border-radius: 8px;
+        }
+        .guestbook-entry strong {
+            overflow-wrap: anywhere;
+        }
+        .guestbook-entry span, .guestbook-entry time {
+            display: block;
+            margin-top: 4px;
+            color: #6e6e73;
+            font-size: 13px;
         }
 
         /* 📱 2. СТИЛИ ДЛЯ ТЕЛЕФОНОВ (ширина экрана от 0 до 480px) */
@@ -104,15 +170,123 @@
         <img src="avatar.jpg" alt="Моё фото" style="width: 100px; height: 100px; border-radius: 50%; object-fit: cover; margin-bottom: 15px;">
         
         <h1>Привет, Я Турганбаев Абубакир</h1>
-        <p>Я создаю его на своём Mac с нуля и настраиваю под разные экраны.</p>
+        <p>Я собираю список тех кто посетил мою страницу и хочет оставить след.</p>
         
-        <button onclick="alert('Ура! Всё работает!')">Нажми на меня</button>
-        
+        <button type="button" id="show-guestbook" aria-expanded="false" aria-controls="guestbook-form">Оставить след</button>
+            <section class="guestbook" aria-labelledby="guestbook-title">
+            <h2 id="guestbook-title">Гостевая книга</h2>
+                <p class="guestbook-intro">Расскажите, как вас зовут и в какой группе вы учитесь.</p>
+            <form class="guestbook-form" id="guestbook-form" hidden>
+                    <label for="nickname">Никнейм</label>
+                    <input id="nickname" name="nickname" maxlength="40" autocomplete="nickname" required>
+                    <label for="study-group">Группа <span>(необязательно)</span></label>
+                    <input id="study-group" name="study-group" maxlength="40" autocomplete="off">
+                    <button type="submit">Оставить запись</button>
+                </form>
+                <p class="guestbook-status" id="guestbook-status" role="status" aria-live="polite"></p>
+                <ul class="guestbook-list" id="guestbook-list" aria-label="Записи посетителей"></ul>
+            </section>
+
         <!-- Ссылка на вторую страницу -->
         <div class="link-container">
             <a href="projects.html">Посмотреть мои проекты →</a>
         </div>
     </div>
 
+    <script>
+        const supabaseUrl = "YOUR_SUPABASE_PROJECT_URL";
+        const supabaseAnonKey = "YOUR_SUPABASE_ANON_KEY";
+        const guestbookForm = document.querySelector("#guestbook-form");
+        const guestbookList = document.querySelector("#guestbook-list");
+        const guestbookStatus = document.querySelector("#guestbook-status");
+        const showGuestbookButton = document.querySelector("#show-guestbook");
+
+        showGuestbookButton.addEventListener("click", () => {
+            guestbookForm.hidden = false;
+            showGuestbookButton.setAttribute("aria-expanded", "true");
+            document.querySelector("#nickname").focus();
+        });
+
+        function isSupabaseConfigured() {
+            return supabaseUrl.startsWith("https://") && !supabaseUrl.includes("YOUR_") && !supabaseAnonKey.includes("YOUR_");
+        }
+
+        async function loadEntries() {
+            if (!isSupabaseConfigured()) {
+                guestbookStatus.textContent = "Список появится после подключения Supabase.";
+                return;
+            }
+
+            try {
+                const response = await fetch(`${supabaseUrl}/rest/v1/guestbook_entries?select=id,nickname,study_group,created_at&order=created_at.desc&limit=50`, {
+                    headers: { apikey: supabaseAnonKey, Authorization: `Bearer ${supabaseAnonKey}` }
+                });
+                if (!response.ok) throw new Error("Не удалось загрузить записи.");
+                const entries = await response.json();
+                guestbookList.replaceChildren();
+
+                for (const entry of entries) {
+                    const item = document.createElement("li");
+                    item.className = "guestbook-entry";
+                    const nickname = document.createElement("strong");
+                    nickname.textContent = entry.nickname;
+                    item.append(nickname);
+
+                    if (entry.study_group) {
+                        const group = document.createElement("span");
+                        group.textContent = `Группа: ${entry.study_group}`;
+                        item.append(group);
+                    }
+
+                    const date = document.createElement("time");
+                    date.dateTime = entry.created_at;
+                    date.textContent = new Date(entry.created_at).toLocaleDateString("ru-RU");
+                    item.append(date);
+                    guestbookList.append(item);
+                }
+                guestbookStatus.textContent = entries.length ? "" : "Пока записей нет. Будьте первым!";
+            } catch (error) {
+                guestbookStatus.textContent = "Не удалось загрузить список. Попробуйте позже.";
+            }
+        }
+
+        guestbookForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            if (!isSupabaseConfigured()) {
+                guestbookStatus.textContent = "Сначала подключите Supabase, чтобы сохранять записи.";
+                return;
+            }
+
+            const submitButton = guestbookForm.querySelector("button");
+            submitButton.disabled = true;
+            guestbookStatus.textContent = "Сохраняем запись...";
+            const formData = new FormData(guestbookForm);
+            const nickname = formData.get("nickname").trim();
+            const studyGroup = formData.get("study-group").trim();
+
+            try {
+                const response = await fetch(`${supabaseUrl}/rest/v1/guestbook_entries`, {
+                    method: "POST",
+                    headers: {
+                        apikey: supabaseAnonKey,
+                        Authorization: `Bearer ${supabaseAnonKey}`,
+                        "Content-Type": "application/json",
+                        Prefer: "return=minimal"
+                    },
+                    body: JSON.stringify({ nickname, study_group: studyGroup || null })
+                });
+                if (!response.ok) throw new Error("Не удалось сохранить запись.");
+                guestbookForm.reset();
+                guestbookStatus.textContent = "Запись добавлена. Спасибо!";
+                await loadEntries();
+            } catch (error) {
+                guestbookStatus.textContent = "Не удалось сохранить запись. Попробуйте позже.";
+            } finally {
+                submitButton.disabled = false;
+            }
+        });
+
+        loadEntries();
+    </script>
 </body>
 </html>
