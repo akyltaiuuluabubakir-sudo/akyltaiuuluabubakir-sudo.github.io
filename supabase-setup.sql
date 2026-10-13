@@ -17,5 +17,4 @@ drop policy if exists "Anyone can add guestbook entries" on public.guestbook_ent
 create policy "Anyone can add guestbook entries"
     on public.guestbook_entries for insert
     to anon, authenticated
-    with check (true);    const supabaseUrl = "https://akyltaiuuluabubakir-sudo's Project.supabase.co";
-    const supabaseAnonKey = "bfrhcvkjnwhwlxyeiqic";
+    with check (true);
