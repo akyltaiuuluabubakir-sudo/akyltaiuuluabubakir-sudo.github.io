@@ -111,9 +111,16 @@
             list-style: none;
         }
         .guestbook-entry {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
             padding: 12px;
             background: #f5f5f7;
             border-radius: 8px;
+        }
+        .guestbook-entry-main {
+            min-width: 0;
         }
         .guestbook-entry strong {
             overflow-wrap: anywhere;
@@ -123,6 +130,19 @@
             margin-top: 4px;
             color: #6e6e73;
             font-size: 13px;
+        }
+        .guestbook-delete {
+            flex: 0 0 auto;
+            width: auto;
+            padding: 6px 10px;
+            border: 1px solid #d0d0d4;
+            border-radius: 6px;
+            background: white;
+            color: #b42318;
+            font-size: 14px;
+        }
+        .guestbook-delete:hover {
+            background: #fff1f0;
         }
 
         /* 📱 2. СТИЛИ ДЛЯ ТЕЛЕФОНОВ (ширина экрана от 0 до 480px) */
@@ -145,6 +165,10 @@
             button {
                 width: 100%; /* Кнопка во всю ширину экрана */
                 padding: 15px;
+            }
+            .guestbook-delete {
+                width: auto;
+                padding: 6px 10px;
             }
         }
 
@@ -193,9 +217,11 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
         const supabaseUrl = "https://bfrhcvkjnwhwlxyeiqic.supabase.co";
         const supabaseAnonKey = "sb_publishable_72YdsagZ1ysJBikS___SmA_o92yw7i0";
+        const supabaseClient = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
         const guestbookForm = document.querySelector("#guestbook-form");
         const guestbookList = document.querySelector("#guestbook-list");
         const guestbookStatus = document.querySelector("#guestbook-status");
@@ -211,6 +237,16 @@
             return supabaseUrl.startsWith("https://") && !supabaseUrl.includes("YOUR_") && !supabaseAnonKey.includes("YOUR_");
         }
 
+        async function ensureAnonymousSession() {
+            const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
+            if (sessionError) throw sessionError;
+            if (sessionData.session) return sessionData.session;
+
+            const { data, error } = await supabaseClient.auth.signInAnonymously();
+            if (error) throw error;
+            return data.session;
+        }
+
         async function loadEntries() {
             if (!isSupabaseConfigured()) {
                 guestbookStatus.textContent = "Список появится после подключения Supabase.";
@@ -218,35 +254,84 @@
             }
 
             try {
-                const response = await fetch(`${supabaseUrl}/rest/v1/guestbook_entries?select=id,nickname,study_group,created_at&order=created_at.desc&limit=50`, {
-                    headers: { apikey: supabaseAnonKey, Authorization: `Bearer ${supabaseAnonKey}` }
-                });
-                if (!response.ok) throw new Error("Не удалось загрузить записи.");
-                const entries = await response.json();
+                const session = await ensureAnonymousSession();
+                const { data: latestEntries, error: latestError } = await supabaseClient
+                    .from("guestbook_entries")
+                    .select("id,nickname,study_group,created_at,owner_id")
+                    .order("created_at", { ascending: false })
+                    .limit(50);
+                if (latestError) throw latestError;
+                const { data: ownEntries, error: ownError } = await supabaseClient
+                    .from("guestbook_entries")
+                    .select("id,nickname,study_group,created_at,owner_id")
+                    .eq("owner_id", session.user.id);
+                if (ownError) throw ownError;
+
+                const entries = [...new Map([...latestEntries, ...ownEntries].map((entry) => [entry.id, entry])).values()]
+                    .sort((first, second) => new Date(second.created_at) - new Date(first.created_at));
+
                 guestbookList.replaceChildren();
+                const ownEntryCount = ownEntries.length;
+                guestbookForm.querySelector("button[type='submit']").disabled = ownEntryCount >= 2;
 
                 for (const entry of entries) {
                     const item = document.createElement("li");
                     item.className = "guestbook-entry";
+                    const details = document.createElement("div");
+                    details.className = "guestbook-entry-main";
                     const nickname = document.createElement("strong");
                     nickname.textContent = entry.nickname;
-                    item.append(nickname);
+                    details.append(nickname);
 
                     if (entry.study_group) {
                         const group = document.createElement("span");
                         group.textContent = `Группа: ${entry.study_group}`;
-                        item.append(group);
+                        details.append(group);
                     }
 
                     const date = document.createElement("time");
                     date.dateTime = entry.created_at;
                     date.textContent = new Date(entry.created_at).toLocaleDateString("ru-RU");
-                    item.append(date);
+                    details.append(date);
+                    item.append(details);
+
+                    if (entry.owner_id === session.user.id) {
+                        const deleteButton = document.createElement("button");
+                        deleteButton.className = "guestbook-delete";
+                        deleteButton.type = "button";
+                        deleteButton.textContent = "Удалить";
+                        deleteButton.setAttribute("aria-label", `Удалить запись ${entry.nickname}`);
+                        deleteButton.addEventListener("click", () => deleteEntry(entry.id, deleteButton));
+                        item.append(deleteButton);
+                    }
+
                     guestbookList.append(item);
                 }
-                guestbookStatus.textContent = entries.length ? "" : "Пока записей нет. Будьте первым!";
+                guestbookStatus.textContent = ownEntryCount >= 2
+                    ? "Вы использовали лимит в 2 записи. Удалите свою запись, чтобы освободить место."
+                    : entries.length ? "" : "Пока записей нет. Будьте первым!";
             } catch (error) {
                 guestbookStatus.textContent = "Не удалось загрузить список. Попробуйте позже.";
+                console.error(error);
+            }
+        }
+
+        async function deleteEntry(entryId, deleteButton) {
+            deleteButton.disabled = true;
+            guestbookStatus.textContent = "Удаляем запись...";
+
+            try {
+                const { error } = await supabaseClient
+                    .from("guestbook_entries")
+                    .delete()
+                    .eq("id", entryId);
+                if (error) throw error;
+                await loadEntries();
+                guestbookStatus.textContent = "Запись удалена.";
+            } catch (error) {
+                guestbookStatus.textContent = "Не удалось удалить запись. Попробуйте позже.";
+                deleteButton.disabled = false;
+                console.error(error);
             }
         }
 
@@ -265,22 +350,21 @@
             const studyGroup = formData.get("study-group").trim();
 
             try {
-                const response = await fetch(`${supabaseUrl}/rest/v1/guestbook_entries`, {
-                    method: "POST",
-                    headers: {
-                        apikey: supabaseAnonKey,
-                        Authorization: `Bearer ${supabaseAnonKey}`,
-                        "Content-Type": "application/json",
-                        Prefer: "return=minimal"
-                    },
-                    body: JSON.stringify({ nickname, study_group: studyGroup || null })
+                const session = await ensureAnonymousSession();
+                const { error } = await supabaseClient.from("guestbook_entries").insert({
+                    nickname,
+                    study_group: studyGroup || null,
+                    owner_id: session.user.id
                 });
-                if (!response.ok) throw new Error("Не удалось сохранить запись.");
+                if (error) throw error;
                 guestbookForm.reset();
-                guestbookStatus.textContent = "Запись добавлена. Спасибо!";
                 await loadEntries();
+                guestbookStatus.textContent = "Запись добавлена. Спасибо!";
             } catch (error) {
-                guestbookStatus.textContent = "Не удалось сохранить запись. Попробуйте позже.";
+                guestbookStatus.textContent = error.code === "23514"
+                    ? "У вас уже есть 2 записи. Удалите одну, чтобы добавить новую."
+                    : "Не удалось сохранить запись. Попробуйте позже.";
+                console.error(error);
             } finally {
                 submitButton.disabled = false;
             }
