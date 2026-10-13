@@ -226,6 +226,7 @@
         const guestbookList = document.querySelector("#guestbook-list");
         const guestbookStatus = document.querySelector("#guestbook-status");
         const showGuestbookButton = document.querySelector("#show-guestbook");
+        let guestbookSupportsOwnerId = true;
 
         showGuestbookButton.addEventListener("click", () => {
             guestbookForm.hidden = false;
@@ -237,16 +238,6 @@
             return supabaseUrl.startsWith("https://") && !supabaseUrl.includes("YOUR_") && !supabaseAnonKey.includes("YOUR_");
         }
 
-        async function ensureAnonymousSession() {
-            const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
-            if (sessionError) throw sessionError;
-            if (sessionData.session) return sessionData.session;
-
-            const { data, error } = await supabaseClient.auth.signInAnonymously();
-            if (error) throw error;
-            return data.session;
-        }
-
         async function loadEntries() {
             if (!isSupabaseConfigured()) {
                 guestbookStatus.textContent = "Список появится после подключения Supabase.";
@@ -254,25 +245,47 @@
             }
 
             try {
-                const session = await ensureAnonymousSession();
-                const { data: latestEntries, error: latestError } = await supabaseClient
+                const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
+                if (sessionError) throw sessionError;
+
+                const session = sessionData.session;
+                const currentUserId = session?.user?.id ?? null;
+
+                let hasOwnerId = true;
+                let entriesResult = await supabaseClient
                     .from("guestbook_entries")
                     .select("id,nickname,study_group,created_at,owner_id")
                     .order("created_at", { ascending: false })
                     .limit(50);
-                if (latestError) throw latestError;
-                const { data: ownEntries, error: ownError } = await supabaseClient
-                    .from("guestbook_entries")
-                    .select("id,nickname,study_group,created_at,owner_id")
-                    .eq("owner_id", session.user.id);
-                if (ownError) throw ownError;
 
-                const entries = [...new Map([...latestEntries, ...ownEntries].map((entry) => [entry.id, entry])).values()]
-                    .sort((first, second) => new Date(second.created_at) - new Date(first.created_at));
+                if (entriesResult.error && entriesResult.error.code === "42703") {
+                    hasOwnerId = false;
+                    guestbookSupportsOwnerId = false;
+                    entriesResult = await supabaseClient
+                        .from("guestbook_entries")
+                        .select("id,nickname,study_group,created_at")
+                        .order("created_at", { ascending: false })
+                        .limit(50);
+                } else {
+                    guestbookSupportsOwnerId = true;
+                }
 
+                if (entriesResult.error) throw entriesResult.error;
+
+                let ownEntries = [];
+                if (currentUserId && hasOwnerId) {
+                    const { data, error } = await supabaseClient
+                        .from("guestbook_entries")
+                        .select("id,nickname,study_group,created_at,owner_id")
+                        .eq("owner_id", currentUserId);
+                    if (error) throw error;
+                    ownEntries = data;
+                }
+
+                const entries = entriesResult.data;
                 guestbookList.replaceChildren();
                 const ownEntryCount = ownEntries.length;
-                guestbookForm.querySelector("button[type='submit']").disabled = ownEntryCount >= 2;
+                guestbookForm.querySelector("button[type='submit']").disabled = Boolean(currentUserId && hasOwnerId && ownEntryCount >= 2);
 
                 for (const entry of entries) {
                     const item = document.createElement("li");
@@ -295,7 +308,7 @@
                     details.append(date);
                     item.append(details);
 
-                    if (entry.owner_id === session.user.id) {
+                    if (hasOwnerId && entry.owner_id === currentUserId) {
                         const deleteButton = document.createElement("button");
                         deleteButton.className = "guestbook-delete";
                         deleteButton.type = "button";
@@ -321,10 +334,21 @@
             guestbookStatus.textContent = "Удаляем запись...";
 
             try {
-                const { error } = await supabaseClient
+                const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
+                if (sessionError) throw sessionError;
+                const currentUserId = sessionData.session?.user?.id;
+                if (!currentUserId) {
+                    throw new Error("User is not signed in");
+                }
+
+                const deleteQuery = supabaseClient
                     .from("guestbook_entries")
                     .delete()
                     .eq("id", entryId);
+
+                const { error } = guestbookSupportsOwnerId
+                    ? await deleteQuery.eq("owner_id", currentUserId)
+                    : await deleteQuery;
                 if (error) throw error;
                 await loadEntries();
                 guestbookStatus.textContent = "Запись удалена.";
@@ -350,13 +374,25 @@
             const studyGroup = formData.get("study-group").trim();
 
             try {
-                const session = await ensureAnonymousSession();
-                const { error } = await supabaseClient.from("guestbook_entries").insert({
+                const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
+                if (sessionError) throw sessionError;
+
+                const payload = {
                     nickname,
-                    study_group: studyGroup || null,
-                    owner_id: session.user.id
-                });
-                if (error) throw error;
+                    study_group: studyGroup || null
+                };
+
+                if (guestbookSupportsOwnerId && sessionData.session?.user?.id) {
+                    payload.owner_id = sessionData.session.user.id;
+                }
+
+                let insertResult = await supabaseClient.from("guestbook_entries").insert(payload);
+                if (insertResult.error && insertResult.error.code === "42703") {
+                    guestbookSupportsOwnerId = false;
+                    delete payload.owner_id;
+                    insertResult = await supabaseClient.from("guestbook_entries").insert(payload);
+                }
+                if (insertResult.error) throw insertResult.error;
                 guestbookForm.reset();
                 await loadEntries();
                 guestbookStatus.textContent = "Запись добавлена. Спасибо!";

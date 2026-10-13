@@ -19,10 +19,10 @@ create policy "Anyone can read guestbook entries"
 
 drop policy if exists "Anyone can add guestbook entries" on public.guestbook_entries;
 drop policy if exists "Authenticated users can add their own entries" on public.guestbook_entries;
-create policy "Authenticated users can add their own entries"
+create policy "Anyone can add guestbook entries"
     on public.guestbook_entries for insert
-    to authenticated
-    with check (owner_id = (select auth.uid()));
+    to anon, authenticated
+    with check (owner_id is null or owner_id = auth.uid());
 
 drop policy if exists "Users can delete their own entries" on public.guestbook_entries;
 create policy "Users can delete their own entries"
@@ -39,16 +39,18 @@ security definer
 set search_path = public, pg_temp
 as $$
 begin
-    if auth.uid() is null or new.owner_id is distinct from auth.uid() then
+    if new.owner_id is not null and new.owner_id is distinct from auth.uid() then
         raise exception 'A valid owner is required for guestbook entries.'
             using errcode = '42501';
     end if;
 
-    perform pg_advisory_xact_lock(hashtextextended(new.owner_id::text, 0));
+    if new.owner_id is not null then
+        perform pg_advisory_xact_lock(hashtextextended(new.owner_id::text, 0));
 
-    if (select count(*) from public.guestbook_entries where owner_id = new.owner_id) >= 2 then
-        raise exception 'You can have at most two guestbook entries.'
-            using errcode = '23514';
+        if (select count(*) from public.guestbook_entries where owner_id = new.owner_id) >= 2 then
+            raise exception 'You can have at most two guestbook entries.'
+                using errcode = '23514';
+        end if;
     end if;
 
     return new;
@@ -61,7 +63,3 @@ create trigger guestbook_entry_limit
     for each row execute function public.enforce_guestbook_entry_limit();
 
 revoke all on function public.enforce_guestbook_entry_limit() from public, anon, authenticated;
-create policy "Anyone can add guestbook entries"
-    on public.guestbook_entries for insert
-    to anon, authenticated
-    with check (true);
